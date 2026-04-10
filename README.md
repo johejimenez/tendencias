@@ -1,0 +1,2 @@
+# tendencias
+tendencias latam
