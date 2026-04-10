@@ -827,7 +827,7 @@
             const systemPrompt = `Actúa como un consultor experto en estrategia académica para la Universidad de La Salle en Colombia. Tu tarea es analizar una iniciativa académica propuesta y evaluarla frente a las macrotendencias del mercado laboral para 2025-2030 (digitalización, IA, sostenibilidad, habilidades socioemocionales, etc.). Debes generar una respuesta estructurada únicamente en el formato JSON especificado. Proporciona una calificación numérica de 1 a 10 para cada uno de los siguientes criterios: 'alineacionConTendencias', 'innovacionDelModelo', 'pertinenciaDelNombre', y 'viabilidadPercibida'. La 'calificacionAlineacion' final debe ser el promedio redondeado de estas cuatro calificaciones. La 'justificacionCalificacion' debe explicar el porqué de la calificación general, haciendo referencia a los puntajes de los criterios individuales. Sugiere 3 nombres alternativos. Si la calificación es superior a 7, debes incluir una lista de riesgos potenciales; de lo contrario, deja el campo 'riesgosPotenciales' como un array vacío. Finalmente, incluye un descargo de responsabilidad indicando que las sugerencias no garantizan el éxito del programa.`;
             const userQuery = `Analizar la siguiente iniciativa: "${selectedInitiative}"`;
             const apiKey = EMBEDDED_API_KEY;
-            const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
+            const modelCandidates = ['gemini-2.5-flash', 'gemini-2.0-flash'];
 
             const payload = {
                 contents: [{ parts: [{ text: userQuery }] }],
@@ -890,22 +890,7 @@
             };
             
             try {
-                const response = await fetchWithExponentialBackoff(apiUrl, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(payload)
-                });
-
-                if (!response.ok) {
-                    let details = '';
-                    try {
-                        const errorBody = await response.json();
-                        details = errorBody?.error?.message || '';
-                    } catch (_) {
-                        details = '';
-                    }
-                    throw new Error(`Error en la API (${response.status}): ${details || response.statusText}`);
-                }
+                const response = await requestWithModelFallback(modelCandidates, apiKey, payload);
 
                 const result = await response.json();
                 const candidate = result.candidates?.[0];
@@ -921,12 +906,57 @@
 
             } catch (error) {
                 console.error("Error al llamar a la API de Gemini:", error);
+                const message = error?.message || '';
+                const isHighDemand = message.includes('(429)') || message.includes('(503)');
                 responseContainer.innerHTML = `
                     <div class="bg-red-100 border-l-4 border-red-500 text-red-700 p-4 rounded-md shadow-md" role="alert">
                         <p class="font-bold">Error de Conexión</p>
-                        <p>No se pudo generar el análisis. ${error.message || 'Por favor, inténtalo de nuevo más tarde.'}</p>
+                        <p>${isHighDemand
+                            ? 'Hay alta demanda en el servicio de IA. Intenta de nuevo en unos segundos; el sistema ya aplica reintentos automáticos.'
+                            : `No se pudo generar el análisis. ${message || 'Por favor, inténtalo de nuevo más tarde.'}`}</p>
                     </div>`;
             }
+        }
+
+        async function requestWithModelFallback(models, apiKey, payload) {
+            let lastError = null;
+
+            for (const model of models) {
+                const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+                const response = await fetchWithExponentialBackoff(apiUrl, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+
+                if (response.ok) {
+                    return response;
+                }
+
+                let details = '';
+                try {
+                    const errorBody = await response.json();
+                    details = errorBody?.error?.message || '';
+                } catch (_) {
+                    details = '';
+                }
+
+                lastError = new Error(`Error en la API (${response.status}): ${details || response.statusText}`);
+
+                // Si el modelo no está disponible o falla por compatibilidad, intentar el siguiente.
+                if (response.status === 404 || response.status === 400) {
+                    continue;
+                }
+
+                // Para alta demanda, ya hubo reintentos en backoff; probar siguiente modelo si existe.
+                if ((response.status === 429 || response.status === 503) && model !== models[models.length - 1]) {
+                    continue;
+                }
+
+                throw lastError;
+            }
+
+            throw lastError || new Error('No fue posible obtener respuesta del servicio de IA.');
         }
         
         function displayResponse(data) {
@@ -1061,18 +1091,22 @@
                 }, 100);
         }
 
-        async function fetchWithExponentialBackoff(url, options, retries = 5, delay = 1000) {
+        async function fetchWithExponentialBackoff(url, options, retries = 6, delay = 1200) {
             try {
                 const response = await fetch(url, options);
                 if ((response.status === 429 || response.status === 503) && retries > 0) {
-                    await new Promise(resolve => setTimeout(resolve, delay));
-                    return fetchWithExponentialBackoff(url, options, retries - 1, delay * 2);
+                    const jitter = Math.floor(Math.random() * 500);
+                    const nextDelay = Math.min(delay * 2, 12000);
+                    await new Promise(resolve => setTimeout(resolve, delay + jitter));
+                    return fetchWithExponentialBackoff(url, options, retries - 1, nextDelay);
                 }
                 return response;
             } catch (error) {
                 if (retries > 0) {
-                    await new Promise(resolve => setTimeout(resolve, delay));
-                    return fetchWithExponentialBackoff(url, options, retries - 1, delay * 2);
+                    const jitter = Math.floor(Math.random() * 500);
+                    const nextDelay = Math.min(delay * 2, 12000);
+                    await new Promise(resolve => setTimeout(resolve, delay + jitter));
+                    return fetchWithExponentialBackoff(url, options, retries - 1, nextDelay);
                 }
                 throw error;
             }
