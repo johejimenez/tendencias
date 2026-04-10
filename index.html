@@ -796,6 +796,7 @@
         const clearBtn = document.getElementById('clear-plan-btn');
         const initiativeManual = document.getElementById('initiative-manual');
         const responseContainer = document.getElementById('gemini-response-container');
+        const EMBEDDED_API_KEY = 'AIzaSyAe2NYno_AnQd3dF-GPHjt8YROe_Vx6iCw';
         
         generateBtn.addEventListener('click', generateActionPlan);
         clearBtn.addEventListener('click', () => {
@@ -825,8 +826,8 @@
             
             const systemPrompt = `Actúa como un consultor experto en estrategia académica para la Universidad de La Salle en Colombia. Tu tarea es analizar una iniciativa académica propuesta y evaluarla frente a las macrotendencias del mercado laboral para 2025-2030 (digitalización, IA, sostenibilidad, habilidades socioemocionales, etc.). Debes generar una respuesta estructurada únicamente en el formato JSON especificado. Proporciona una calificación numérica de 1 a 10 para cada uno de los siguientes criterios: 'alineacionConTendencias', 'innovacionDelModelo', 'pertinenciaDelNombre', y 'viabilidadPercibida'. La 'calificacionAlineacion' final debe ser el promedio redondeado de estas cuatro calificaciones. La 'justificacionCalificacion' debe explicar el porqué de la calificación general, haciendo referencia a los puntajes de los criterios individuales. Sugiere 3 nombres alternativos. Si la calificación es superior a 7, debes incluir una lista de riesgos potenciales; de lo contrario, deja el campo 'riesgosPotenciales' como un array vacío. Finalmente, incluye un descargo de responsabilidad indicando que las sugerencias no garantizan el éxito del programa.`;
             const userQuery = `Analizar la siguiente iniciativa: "${selectedInitiative}"`;
-            const apiKey = ""; // Canvas will provide the key
-            const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=${apiKey}`;
+            const apiKey = EMBEDDED_API_KEY;
+            const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
 
             const payload = {
                 contents: [{ parts: [{ text: userQuery }] }],
@@ -835,6 +836,7 @@
                 },
                 generationConfig: {
                     responseMimeType: "application/json",
+                    thinkingConfig: { thinkingBudget: 0 },
                     responseSchema: {
                         type: "OBJECT",
                         properties: {
@@ -895,14 +897,22 @@
                 });
 
                 if (!response.ok) {
-                    throw new Error(`Error en la API: ${response.statusText}`);
+                    let details = '';
+                    try {
+                        const errorBody = await response.json();
+                        details = errorBody?.error?.message || '';
+                    } catch (_) {
+                        details = '';
+                    }
+                    throw new Error(`Error en la API (${response.status}): ${details || response.statusText}`);
                 }
 
                 const result = await response.json();
                 const candidate = result.candidates?.[0];
 
-                if (candidate && candidate.content?.parts?.[0]?.text) {
-                    const jsonText = candidate.content.parts[0].text;
+                const textPart = candidate?.content?.parts?.find(p => !p.thought && p.text);
+                if (textPart) {
+                    const jsonText = textPart.text;
                     const data = JSON.parse(jsonText);
                     displayResponse(data);
                 } else {
@@ -914,7 +924,7 @@
                 responseContainer.innerHTML = `
                     <div class="bg-red-100 border-l-4 border-red-500 text-red-700 p-4 rounded-md shadow-md" role="alert">
                         <p class="font-bold">Error de Conexión</p>
-                        <p>No se pudo generar el análisis. Por favor, inténtalo de nuevo más tarde.</p>
+                        <p>No se pudo generar el análisis. ${error.message || 'Por favor, inténtalo de nuevo más tarde.'}</p>
                     </div>`;
             }
         }
@@ -1054,7 +1064,7 @@
         async function fetchWithExponentialBackoff(url, options, retries = 5, delay = 1000) {
             try {
                 const response = await fetch(url, options);
-                if (response.status === 429 && retries > 0) {
+                if ((response.status === 429 || response.status === 503) && retries > 0) {
                     await new Promise(resolve => setTimeout(resolve, delay));
                     return fetchWithExponentialBackoff(url, options, retries - 1, delay * 2);
                 }
